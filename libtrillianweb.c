@@ -189,6 +189,7 @@ trillian_fetch_url(TrillianAccount *ta, const gchar *url, TrillianWebRequestData
 	TrillianProxyConnection *conn;
 	PurpleHttpRequest *request;
 	gchar *postdata;
+	gboolean free_url = FALSE;
 
 	if (purple_account_is_disconnected(ta->account)) return;
 
@@ -196,14 +197,35 @@ trillian_fetch_url(TrillianAccount *ta, const gchar *url, TrillianWebRequestData
 	conn->ta = ta;
 	conn->callback = callback;
 	conn->user_data = user_data;
+	
+	if (ta->session) {
+		trillian_requestdata_add(data, "xsession", ta->session);
+	}
+	if (ta->sequence) {
+		gchar *sequence_str = g_strdup_printf("%" G_GUINT64_FORMAT, ++ta->sequence);
+		trillian_requestdata_add(data, "xsequence", sequence_str);
+		g_free(sequence_str);
+	}
+	
+	trillian_requestdata_add(data, "xusername", purple_account_get_username(ta->account));
+	trillian_requestdata_add(data, "xpassword", purple_connection_get_password(ta->pc));
+	
+	if (url == NULL) {
+		url = g_strdup_printf("https://%s/trillian", ta->host ? ta->host : "octopus.trillian.im");
+		free_url = TRUE;
+	}
 
 	postdata = trillian_requestdata_get_string(data);
+	
 	request = trillianweb_prepare_fetch_url(ta, url, postdata);
 
 	http_conn = purple_http_request(ta->pc, request, trillianweb_response_callback, conn);
 	purple_http_request_unref(request);
 	
 	g_free(postdata);
+	if (free_url) {
+		g_free((gpointer) url);
+	}
 	
 	ta->http_conns = g_slist_prepend(ta->http_conns, http_conn);
 }
@@ -224,32 +246,63 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		ta->session = g_strdup(trillian_requestdata_get(chunk, "session"));
 		ta->sequence = g_ascii_strtoull(trillian_requestdata_get(chunk, "sequence"), NULL, 0);
 		
+	} else if (purple_strequal(e, "contactlist_update")) {
+		const gchar *username = trillian_requestdata_get(chunk, "username");
+		const gchar *status = trillian_requestdata_get(chunk, "status");
+		const gchar *statusmsg = trillian_requestdata_get(chunk, "statusmsg");
+		purple_protocol_got_user_status(ta->account, username, status, "message", statusmsg, NULL);
+		
 	} else if (purple_strequal(e, "contactlist_initialize")) {
 		gsize xml_len;
 		gchar *contactlist_xml = (gchar *)g_base64_decode(trillian_requestdata_get(chunk, "contactlist"), &xml_len);
 		PurpleXmlNode *cl = purple_xmlnode_from_str(contactlist_xml, xml_len);
 		PurpleXmlNode *s = purple_xmlnode_get_child(cl, "s");
 		PurpleXmlNode *g = purple_xmlnode_get_child(s, "g");
-		PurpleXmlNode *t = purple_xmlnode_get_child(g, "t");
-		PurpleXmlNode *c = purple_xmlnode_get_child(g, "c");
-		
-		(void) t; //TODO group
 		
 		do {
-			const gchar *usertype = purple_xmlnode_get_attrib(c, "m");
-			if (purple_strequal(usertype, "ASTRA")) {
-				const gchar *username = purple_xmlnode_get_attrib(c, "r");
-				if (!purple_blist_find_buddy(ta->account, username)) {
-					gchar *alias = purple_xmlnode_get_data(c);
-					PurpleBuddy *buddy = purple_buddy_new(ta->account, username, purple_url_decode(alias));
-					purple_blist_add_buddy(buddy, NULL, NULL, NULL); //TODO group
-					g_free(alias);
-				}
+			PurpleXmlNode *t = purple_xmlnode_get_child(g, "t");
+			gchar *group_name = purple_xmlnode_get_data(t);
+			PurpleGroup *group = purple_blist_find_group(group_name);
+			if (!group) {
+				group = purple_group_new(group_name);
 			}
-		} while ((c = purple_xmlnode_get_next_twin(c)));
+			g_free(group_name);
+			
+			PurpleXmlNode *c = purple_xmlnode_get_child(g, "c");
+			do {
+				const gchar *medium = purple_xmlnode_get_attrib(c, "m");
+				if (purple_strequal(medium, "ASTRA")) {
+					const gchar *username = purple_xmlnode_get_attrib(c, "r");
+					if (!purple_blist_find_buddy(ta->account, username)) {
+						gchar *alias = purple_xmlnode_get_data(c);
+						PurpleBuddy *buddy = purple_buddy_new(ta->account, username, purple_url_decode(alias));
+						purple_blist_add_buddy(buddy, NULL, group, NULL);
+						g_free(alias);
+					}
+				}
+			} while ((c = purple_xmlnode_get_next_twin(c)));
+		} while ((g = purple_xmlnode_get_next_twin(g)));
 		
 		purple_xmlnode_free(cl);
 		g_free(contactlist_xml);
+		
+	} else if (purple_strequal(e, "contactlist_add")) {
+		const gchar *medium = trillian_requestdata_get(chunk, "medium");
+		if (purple_strequal(medium, "ASTRA")) {
+			const gchar *username = trillian_requestdata_get(chunk, "username");
+			if (!purple_blist_find_buddy(ta->account, username)) {
+				const gchar *group_name = trillian_requestdata_get(chunk, "group");
+				const gchar *displayname = trillian_requestdata_get(chunk, "displayname");
+				
+				PurpleGroup *group = purple_blist_find_group(group_name);
+				if (!group) {
+					group = purple_group_new(group_name);
+				}
+				
+				PurpleBuddy *buddy = purple_buddy_new(ta->account, username, displayname);
+				purple_blist_add_buddy(buddy, NULL, group, NULL);
+			}
+		}
 		
 	} else if (purple_strequal(e, "session_ready")) {
 		purple_connection_set_state(ta->pc, PURPLE_CONNECTION_CONNECTED);
@@ -301,6 +354,32 @@ trillianweb_process_response(TrillianAccount *ta, TrillianWebRequestData *respon
 }
 
 
+
+static void
+trillianweb_add_buddy(PurpleConnection *pc, PurpleBuddy *buddy, PurpleGroup *group
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+, const char *message
+#endif
+)
+{
+	TrillianAccount *ta = purple_connection_get_protocol_data(pc);
+	const gchar *buddy_name = purple_buddy_get_name(buddy);
+	const gchar *group_name = purple_group_get_name(group);
+	
+	TrillianWebRequestData *data = trillian_requestdata_new();
+	trillian_requestdata_add(data, "c", "contactlistAdd");
+	trillian_requestdata_add(data, "medium", "ASTRA");
+	trillian_requestdata_add(data, "username", buddy_name);
+	trillian_requestdata_add(data, "identity", "default");
+	trillian_requestdata_add(data, "connection", "1001");
+	trillian_requestdata_add(data, "group", group_name);
+	
+	trillian_fetch_url(ta, NULL, data, trillianweb_process_response, NULL);
+	
+	trillian_requestdata_free(data);
+}
+
+
 static void
 trillianweb_process_poll_response(TrillianAccount *ta, TrillianWebRequestData *response, gpointer user_data)
 {
@@ -316,21 +395,12 @@ trillianweb_poll(TrillianAccount *ta)
 		return;
 	}
 	
-	gchar *url = g_strdup_printf("https://%s/trillian", ta->host ? ta->host : "octopus.trillian.im");
-	gchar *sequence_str = g_strdup_printf("%" G_GUINT64_FORMAT, ++ta->sequence);
-	
 	TrillianWebRequestData *data = trillian_requestdata_new();
 	trillian_requestdata_add(data, "c", "sessionPoll");
-	trillian_requestdata_add(data, "xsession", ta->session);
-	trillian_requestdata_add(data, "xsequence", sequence_str);
-	trillian_requestdata_add(data, "xusername", purple_account_get_username(ta->account));
-	trillian_requestdata_add(data, "xpassword", purple_connection_get_password(ta->pc));
 	
-	trillian_fetch_url(ta, url, data, trillianweb_process_poll_response, NULL);
+	trillian_fetch_url(ta, NULL, data, trillianweb_process_poll_response, NULL);
 	
 	trillian_requestdata_free(data);
-	g_free(url);
-	g_free(sequence_str);
 }
 
 static void
@@ -363,8 +433,6 @@ trillianweb_login(PurpleAccount *account)
 	trillian_requestdata_add(data, "platform", "Web");
 	trillian_requestdata_add(data, "device", "WEB");
 	trillian_requestdata_add(data, "expire", "5");
-	trillian_requestdata_add(data, "xusername", purple_account_get_username(account));
-	trillian_requestdata_add(data, "xpassword", purple_connection_get_password(pc));
 	
 	trillian_fetch_url(ta, "https://octopus.trillian.im/trillian", data, trillianweb_process_poll_response, NULL);
 	
@@ -521,7 +589,7 @@ plugin_init(PurplePlugin *plugin)
 	// prpl_info->chat_send = trillianweb_chat_send;
 	// prpl_info->set_chat_topic = trillianweb_chat_set_topic;
 	// prpl_info->get_cb_real_name = trillianweb_get_real_name;
-	// prpl_info->add_buddy = trillianweb_add_buddy;
+	prpl_info->add_buddy = trillianweb_add_buddy;
 	// prpl_info->remove_buddy = trillianweb_buddy_remove;
 	// prpl_info->group_buddy = trillianweb_fake_group_buddy;
 	// prpl_info->rename_group = trillianweb_fake_group_rename;
