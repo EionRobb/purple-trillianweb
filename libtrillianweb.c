@@ -233,18 +233,27 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		PurpleXmlNode *t = purple_xmlnode_get_child(g, "t");
 		PurpleXmlNode *c = purple_xmlnode_get_child(g, "c");
 		
-		(void) t;
+		(void) t; //TODO group
 		
 		do {
-			gchar *alias = purple_xmlnode_get_data(c);
-			const gchar *username = purple_xmlnode_get_attrib(c, "n");
-			PurpleBuddy *buddy = purple_buddy_new(ta->account, username, alias);
-			purple_blist_add_buddy(buddy, NULL, NULL, NULL); //TODO group
-			g_free(alias);
+			const gchar *usertype = purple_xmlnode_get_attrib(c, "m");
+			if (purple_strequal(usertype, "ASTRA")) {
+				const gchar *username = purple_xmlnode_get_attrib(c, "r");
+				if (!purple_blist_find_buddy(ta->account, username)) {
+					gchar *alias = purple_xmlnode_get_data(c);
+					PurpleBuddy *buddy = purple_buddy_new(ta->account, username, purple_url_decode(alias));
+					purple_blist_add_buddy(buddy, NULL, NULL, NULL); //TODO group
+					g_free(alias);
+				}
+			}
 		} while ((c = purple_xmlnode_get_next_twin(c)));
 		
 		purple_xmlnode_free(cl);
 		g_free(contactlist_xml);
+		
+	} else if (purple_strequal(e, "session_ready")) {
+		purple_connection_set_state(ta->pc, PURPLE_CONNECTION_CONNECTED);
+		
 	} else {
 		purple_debug_error("trillianweb", "Unknown event type %s\n", e);
 	}
@@ -336,6 +345,8 @@ trillianweb_login(PurpleAccount *account)
 	// pc_flags |= PURPLE_CONNECTION_FLAG_NO_FONTSIZE;
 	// pc_flags |= PURPLE_CONNECTION_FLAG_NO_BGCOLOR;
 	// purple_connection_set_flags(pc, pc_flags);
+	
+	purple_connection_set_state(pc, PURPLE_CONNECTION_CONNECTING);
 	
 	ta = g_new0(TrillianAccount, 1);
 	purple_connection_set_protocol_data(pc, ta);
