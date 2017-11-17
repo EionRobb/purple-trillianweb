@@ -300,9 +300,9 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		do {
 			PurpleXmlNode *t = purple_xmlnode_get_child(g, "t");
 			gchar *group_name = purple_xmlnode_get_data(t);
-			PurpleGroup *group = purple_blist_find_group(group_name);
+			PurpleGroup *group = purple_blist_find_group(purple_url_decode(group_name));
 			if (!group) {
-				group = purple_group_new(group_name);
+				group = purple_group_new(purple_url_decode(group_name));
 			}
 			g_free(group_name);
 			
@@ -319,6 +319,26 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 					}
 				}
 			} while ((c = purple_xmlnode_get_next_twin(c)));
+			
+			PurpleXmlNode *gc = purple_xmlnode_get_child(g, "gc");
+			do {
+				const gchar *medium = purple_xmlnode_get_attrib(gc, "m");
+				if (purple_strequal(medium, "ASTRA")) {
+					const gchar *name = purple_xmlnode_get_attrib(gc, "n");
+					gchar *displayname = purple_xmlnode_get_data(gc);
+					PurpleChat *chat = purple_blist_find_chat(ta->account, purple_url_decode(name));
+					if (!chat) {
+						GHashTable *components = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+						g_hash_table_replace(components, g_strdup("name"), g_strdup(purple_url_decode(name)));
+						
+						PurpleChat *chat = purple_chat_new(ta->account, purple_url_decode(displayname), components);
+						purple_blist_add_chat(chat, group, NULL);
+					} else {
+						purple_blist_alias_chat(chat, purple_url_decode(displayname));
+					}
+					g_free(displayname);
+				}
+			} while ((gc = purple_xmlnode_get_next_twin(gc)));
 		} while ((g = purple_xmlnode_get_next_twin(g)));
 		
 		purple_xmlnode_free(cl);
@@ -326,7 +346,9 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		
 	} else if (purple_strequal(e, "contactlist_add")) {
 		const gchar *medium = trillian_requestdata_get(chunk, "medium");
-		if (purple_strequal(medium, "ASTRA")) {
+		if (medium == NULL) {
+			// Probably a group adding?
+		} else if (purple_strequal(medium, "ASTRA")) {
 			const gchar *username = trillian_requestdata_get(chunk, "username");
 			if (!purple_blist_find_buddy(ta->account, username)) {
 				const gchar *group_name = trillian_requestdata_get(chunk, "group");
@@ -339,6 +361,38 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 				
 				PurpleBuddy *buddy = purple_buddy_new(ta->account, username, displayname);
 				purple_blist_add_buddy(buddy, NULL, group, NULL);
+			}
+		}
+		
+	} else if (purple_strequal(e, "groupchat_add")) {
+		const gchar *medium = trillian_requestdata_get(chunk, "medium");
+		if (purple_strequal(medium, "ASTRA")) {
+			const gchar *name = trillian_requestdata_get(chunk, "name");
+			if (!purple_blist_find_chat(ta->account, name)) {
+				const gchar *displayname = trillian_requestdata_get(chunk, "displayname");
+				const gchar *group_name = trillian_requestdata_get(chunk, "group");
+				GHashTable *components = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+				PurpleGroup *group = purple_blist_find_group(group_name);
+				if (!group) {
+					group = purple_group_new(group_name);
+				}
+				
+				g_hash_table_replace(components, g_strdup("name"), g_strdup(name));
+				
+				PurpleChat *chat = purple_chat_new(ta->account, displayname, components);
+				purple_blist_add_chat(chat, group, NULL);
+			}
+		}
+		
+	} else if (purple_strequal(e, "groupchat_update")) {
+		const gchar *medium = trillian_requestdata_get(chunk, "medium");
+		if (purple_strequal(medium, "ASTRA")) {
+			const gchar *name = trillian_requestdata_get(chunk, "name");
+			const gchar *displayname = trillian_requestdata_get(chunk, "displayname");
+			PurpleChat *chat = purple_blist_find_chat(ta->account, name);
+			
+			if (chat) {
+				purple_blist_alias_chat(chat, displayname);
 			}
 		}
 		
