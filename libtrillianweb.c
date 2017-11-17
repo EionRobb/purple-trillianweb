@@ -233,6 +233,21 @@ trillian_fetch_url(TrillianAccount *ta, const gchar *url, TrillianWebRequestData
 }
 
 static void trillianweb_poll(TrillianAccount *ta);
+static void trillianweb_process_response(TrillianAccount *, TrillianWebRequestData *, gpointer);
+
+static void
+trillianweb_get_avatar(TrillianAccount *ta, const gchar *username)
+{
+	TrillianWebRequestData *data = trillian_requestdata_new();
+	trillian_requestdata_add(data, "c", "avatarGet");
+	trillian_requestdata_add(data, "username", username);
+	trillian_requestdata_add(data, "medium", "ASTRA");
+	trillian_requestdata_add(data, "identity", "default");
+	
+	trillian_fetch_url(ta, NULL, data, trillianweb_process_response, NULL);
+	
+	trillian_requestdata_free(data);
+}
 
 static void
 trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gpointer user_data)
@@ -253,6 +268,12 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		const gchar *status = trillian_requestdata_get(chunk, "status");
 		const gchar *statusmsg = trillian_requestdata_get(chunk, "statusmsg");
 		purple_protocol_got_user_status(ta->account, username, status, "message", statusmsg, NULL);
+		
+		const gchar *iconhash = trillian_requestdata_get(chunk, "iconhash");
+		PurpleBuddyIcon *icon = purple_buddy_icons_find(ta->account, username);
+		if ((!icon && iconhash) || !purple_strequal(purple_buddy_icon_get_checksum(icon), iconhash)) {
+			trillianweb_get_avatar(ta, username);
+		}
 		
 	} else if (purple_strequal(e, "message_receive")) {
 		const gchar *type = trillian_requestdata_get(chunk, "type");
@@ -321,6 +342,27 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 			}
 		}
 		
+	} else if (purple_strequal(e, "contactlist_rename")) {
+		const gchar *medium = trillian_requestdata_get(chunk, "medium");
+		if (purple_strequal(medium, "ASTRA")) {
+			const gchar *username = trillian_requestdata_get(chunk, "username");
+			const gchar *name = trillian_requestdata_get(chunk, "name");
+			
+			purple_serv_got_alias(ta->pc, username, name);
+		}
+		
+	} else if (purple_strequal(e, "avatar_set")) {
+		const gchar *medium = trillian_requestdata_get(chunk, "medium");
+		if (purple_strequal(medium, "ASTRA")) {
+			const gchar *username = trillian_requestdata_get(chunk, "username");
+			gsize avatar_len;
+			const gchar *avatar_base64 = trillian_requestdata_get(chunk, "avatar");
+			guchar *avatar = g_base64_decode(avatar_base64, &avatar_len);
+			const gchar *hash = trillian_requestdata_get(chunk, "hash");
+			
+			purple_buddy_icons_set_for_user(ta->account, username, avatar, avatar_len, hash);
+		}
+		
 	} else if (purple_strequal(e, "session_ready")) {
 		purple_connection_set_state(ta->pc, PURPLE_CONNECTION_CONNECTED);
 		
@@ -371,6 +413,41 @@ trillianweb_process_response(TrillianAccount *ta, TrillianWebRequestData *respon
 }
 
 
+static void
+trillianweb_set_status(PurpleAccount *account, PurpleStatus *status)
+{
+	PurpleConnection *pc = purple_account_get_connection(account);
+	TrillianAccount *ta = purple_connection_get_protocol_data(pc);
+	const gchar *status_id = purple_status_get_id(status);
+	const gchar *message = purple_status_get_attr_string(status, "message");
+	
+	
+	TrillianWebRequestData *data = trillian_requestdata_new();
+	trillian_requestdata_add(data, "c", "sessionStatus");
+	trillian_requestdata_add(data, "status", status_id);
+	trillian_requestdata_add(data, "statusmsg", message);
+	
+	trillian_fetch_url(ta, NULL, data, trillianweb_process_response, NULL);
+	
+	trillian_requestdata_free(data);
+}
+
+static void
+trillianweb_alias_buddy(PurpleConnection *pc, const char *who, const char *alias)
+{
+	TrillianAccount *ta = purple_connection_get_protocol_data(pc);
+	
+	TrillianWebRequestData *data = trillian_requestdata_new();
+	trillian_requestdata_add(data, "c", "contactlistRename");
+	trillian_requestdata_add(data, "medium", "ASTRA");
+	trillian_requestdata_add(data, "username", who);
+	trillian_requestdata_add(data, "identity", "default");
+	trillian_requestdata_add(data, "name", alias);
+	
+	trillian_fetch_url(ta, NULL, data, trillianweb_process_response, NULL);
+	
+	trillian_requestdata_free(data);
+}
 
 static void
 trillianweb_add_buddy(PurpleConnection *pc, PurpleBuddy *buddy, PurpleGroup *group
@@ -413,9 +490,29 @@ trillianweb_poll(TrillianAccount *ta)
 	}
 	
 	TrillianWebRequestData *data = trillian_requestdata_new();
-	trillian_requestdata_add(data, "c", "sessionPoll");
+	PurplePresence *presence = purple_account_get_presence(ta->account);
+	
+	if (purple_presence_is_idle(presence)) {
+		gchar *seconds = g_strdup_printf("%d", (int) (purple_presence_get_idle_time(presence) - time(NULL)));
+		trillian_requestdata_add(data, "c", "sessionIdle");
+		trillian_requestdata_add(data, "seconds", seconds);
+		g_free(seconds);
+	} else {
+		trillian_requestdata_add(data, "c", "sessionPoll");
+	}
 	
 	trillian_fetch_url(ta, NULL, data, trillianweb_process_poll_response, NULL);
+	
+	trillian_requestdata_free(data);
+}
+
+static void
+trillianweb_logout(TrillianAccount *ta)
+{
+	TrillianWebRequestData *data = trillian_requestdata_new();
+	trillian_requestdata_add(data, "c", "sessionLogout");
+	
+	trillian_fetch_url(ta, NULL, data, NULL, NULL);
 	
 	trillian_requestdata_free(data);
 }
@@ -464,6 +561,8 @@ trillianweb_close(PurpleConnection *pc)
 	// PurpleAccount *account;
 	
 	g_return_if_fail(ta != NULL);
+	
+	trillianweb_logout(ta);
 	
 	g_free(ta->host);
 	g_free(ta->session);
@@ -591,7 +690,7 @@ plugin_init(PurplePlugin *plugin)
 	// prpl_info->status_text = trillianweb_status_text;
 	// prpl_info->tooltip_text = trillianweb_tooltip_text;
 	prpl_info->list_icon = trillianweb_list_icon;
-	// prpl_info->set_status = trillianweb_set_status;
+	prpl_info->set_status = trillianweb_set_status;
 	// prpl_info->set_idle = trillianweb_set_idle;
 	prpl_info->status_types = trillianweb_status_types;
 	// prpl_info->chat_info = trillianweb_chat_info;
@@ -607,6 +706,7 @@ plugin_init(PurplePlugin *plugin)
 	// prpl_info->set_chat_topic = trillianweb_chat_set_topic;
 	// prpl_info->get_cb_real_name = trillianweb_get_real_name;
 	prpl_info->add_buddy = trillianweb_add_buddy;
+	prpl_info->alias_buddy = trillianweb_alias_buddy;
 	// prpl_info->remove_buddy = trillianweb_buddy_remove;
 	// prpl_info->group_buddy = trillianweb_fake_group_buddy;
 	// prpl_info->rename_group = trillianweb_fake_group_rename;
