@@ -132,26 +132,28 @@ trillianweb_response_callback(PurpleHttpConnection *http_conn, PurpleHttpRespons
 	GHashTable *data = trillian_requestdata_new();
 	guint i;
 	
-	//conn->ta->http_conns = g_slist_remove(conn->ta->http_conns, http_conn);
+	conn->ta->http_conns = g_slist_remove(conn->ta->http_conns, http_conn);
+	if (purple_http_response_is_successful(response)) {
 
-	body = purple_http_response_get_data(response, &body_len);
-	
-	gchar **tokens = g_strsplit_set(body, "&", -1);
-	for (i = 0; tokens[i]; i++) {
-		gchar **keyvals = g_strsplit_set(tokens[i], "=", 2);
+		body = purple_http_response_get_data(response, &body_len);
 		
-		g_hash_table_insert(data, g_uri_unescape_string(keyvals[0], NULL), g_uri_unescape_string(keyvals[1], NULL));
+		gchar **tokens = g_strsplit_set(body, "&", -1);
+		for (i = 0; tokens[i]; i++) {
+			gchar **keyvals = g_strsplit_set(tokens[i], "=", 2);
+			
+			g_hash_table_insert(data, g_uri_unescape_string(keyvals[0], NULL), g_uri_unescape_string(keyvals[1], NULL));
+			
+			g_strfreev(keyvals);
+		}
+		g_strfreev(tokens);
 		
-		g_strfreev(keyvals);
+		//purple_debug_misc("yahoo", "Got response: %s\n", body);
+		if (conn->callback) {
+			conn->callback(conn->ta, data, conn->user_data);
+		}
+		
+		g_hash_table_unref(data);
 	}
-	g_strfreev(tokens);
-	
-	//purple_debug_misc("yahoo", "Got response: %s\n", body);
-	if (conn->callback) {
-		conn->callback(conn->ta, data, conn->user_data);
-	}
-	
-	g_hash_table_unref(data);
 	g_free(conn);
 }
 
@@ -251,6 +253,21 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		const gchar *status = trillian_requestdata_get(chunk, "status");
 		const gchar *statusmsg = trillian_requestdata_get(chunk, "statusmsg");
 		purple_protocol_got_user_status(ta->account, username, status, "message", statusmsg, NULL);
+		
+	} else if (purple_strequal(e, "message_receive")) {
+		const gchar *type = trillian_requestdata_get(chunk, "type");
+		const gchar *name = trillian_requestdata_get(chunk, "name");
+		const gchar *msg_base64 = trillian_requestdata_get(chunk, "msg");
+		gsize msg_len;
+		gchar *msg = (gchar *)g_base64_decode(msg_base64, &msg_len);
+		const gchar *time = trillian_requestdata_get(chunk, "time");
+		gint64 timestamp = g_ascii_strtoll(time, NULL, 0);
+		PurpleMessageFlags msg_flags;
+		
+		if (purple_strequal(type, "incoming_privateMessage")) {
+			msg_flags = PURPLE_MESSAGE_RECV;
+			purple_serv_got_im(ta->pc, name, msg, msg_flags, timestamp);
+		}
 		
 	} else if (purple_strequal(e, "contactlist_initialize")) {
 		gsize xml_len;
@@ -408,13 +425,13 @@ trillianweb_login(PurpleAccount *account)
 {
 	TrillianAccount *ta;
 	PurpleConnection *pc = purple_account_get_connection(account);
-	//PurpleConnectionFlags pc_flags;
+	PurpleConnectionFlags pc_flags;
 	
-	// pc_flags = purple_connection_get_flags(pc);
-	// pc_flags |= PURPLE_CONNECTION_FLAG_HTML;
-	// pc_flags |= PURPLE_CONNECTION_FLAG_NO_FONTSIZE;
-	// pc_flags |= PURPLE_CONNECTION_FLAG_NO_BGCOLOR;
-	// purple_connection_set_flags(pc, pc_flags);
+	pc_flags = purple_connection_get_flags(pc);
+	pc_flags |= PURPLE_CONNECTION_FLAG_HTML;
+	pc_flags |= PURPLE_CONNECTION_FLAG_NO_FONTSIZE;
+	pc_flags |= PURPLE_CONNECTION_FLAG_NO_BGCOLOR;
+	purple_connection_set_flags(pc, pc_flags);
 	
 	purple_connection_set_state(pc, PURPLE_CONNECTION_CONNECTING);
 	
