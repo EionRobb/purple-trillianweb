@@ -240,6 +240,55 @@ trillian_fetch_url(TrillianAccount *ta, const gchar *url, TrillianWebRequestData
 static void trillianweb_poll(TrillianAccount *ta);
 static void trillianweb_process_response(TrillianAccount *, TrillianWebRequestData *, gpointer);
 
+
+static void
+trillianweb_mark_conversation_seen(PurpleConversation *conv, PurpleConversationUpdateType type)
+{
+	PurpleConnection *pc;
+	
+	if (type != PURPLE_CONVERSATION_UPDATE_UNSEEN)
+		return;
+	
+	pc = purple_conversation_get_connection(conv);
+	if (!PURPLE_CONNECTION_IS_CONNECTED(pc))
+		return;
+	
+	if (g_strcmp0(purple_protocol_get_id(purple_connection_get_protocol(pc)), TRILLIANWEB_PLUGIN_ID))
+		return;
+	if (!purple_conversation_has_focus(conv))
+		return;
+	
+	// TODO only if available?
+	// if (!purple_presence_is_status_primitive_active(purple_account_get_presence(ha->account), PURPLE_STATUS_AVAILABLE)) {
+		// // We're not here
+		// return FALSE;
+	// }
+	
+	TrillianAccount *ta = purple_connection_get_protocol_data(pc);
+	gchar *window = NULL;
+	if (purple_conversation_get_type(conv) == PURPLE_CONV_TYPE_IM) {
+		const gchar *name = purple_conversation_get_name(conv);
+		window = g_hash_table_lookup(ta->im_window, name);
+		
+	} else if (purple_conversation_get_type(conv) == PURPLE_CONV_TYPE_CHAT) {
+		const gchar *name = purple_conversation_get_name(conv);
+		window = g_hash_table_lookup(ta->group_window, name);
+		
+	}
+
+	if (!window || !*window) {
+		return;
+	}
+	
+	TrillianWebRequestData *data = trillian_requestdata_new();
+	trillian_requestdata_add(data, "c", "messageAck");
+	trillian_requestdata_add(data, "window", window);
+	
+	trillian_fetch_url(ta, NULL, data, NULL, NULL);
+	
+	trillian_requestdata_free(data);
+}
+
 static void
 trillianweb_get_avatar(TrillianAccount *ta, const gchar *username)
 {
@@ -281,24 +330,59 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		}
 		
 	} else if (purple_strequal(e, "message_receive")) {
+		const gchar *unread = trillian_requestdata_get(chunk, "unread");
+		if (!unread || !*unread || *unread == '0') {
+			//TODO handle read messages as history
+			return;
+		}
+		
 		const gchar *type = trillian_requestdata_get(chunk, "type");
 		const gchar *name = trillian_requestdata_get(chunk, "name");
+		const gchar *window = trillian_requestdata_get(chunk, "window");
 		const gchar *msg_base64 = trillian_requestdata_get(chunk, "msg");
 		gsize msg_len;
 		gchar *msg = (gchar *)g_base64_decode(msg_base64, &msg_len);
 		const gchar *time = trillian_requestdata_get(chunk, "time");
 		gint64 timestamp = g_ascii_strtoll(time, NULL, 0);
 		PurpleMessageFlags msg_flags;
+		PurpleConversation *pconv = NULL;
 		
 		if (purple_strequal(type, "incoming_privateMessage")) {
 			msg_flags = PURPLE_MESSAGE_RECV;
 			purple_serv_got_im(ta->pc, name, msg, msg_flags, timestamp);
+			pconv = PURPLE_CONVERSATION(purple_conversations_find_im_with_account(name, ta->account));
+			
 		} else if (purple_strequal(type, "incoming_groupMessage") || purple_strequal(type, "outgoing_groupMessage")) {
-			//TODO
+			guint window_int = atoi(window);
+			const gchar *conv_name = g_hash_table_lookup(ta->window_group, window);
+			
+			PurpleChatConversation *chatconv = purple_conversations_find_chat_with_account(conv_name, ta->account);
+			if (chatconv == NULL) {
+				chatconv = purple_serv_got_joined_chat(ta->pc, window_int, conv_name);
+			}
+			pconv = PURPLE_CONVERSATION(chatconv);
+			
+			if (*type == 'i') {
+				msg_flags = PURPLE_MESSAGE_RECV;
+			} else {
+				msg_flags = PURPLE_MESSAGE_SEND;
+			}
+			purple_serv_got_chat_in(ta->pc, window_int, name, msg_flags, msg, timestamp);
+			
 		} else if (purple_strequal(type, "outgoing_privateMessage")) {
-			//TODO
+			msg_flags = PURPLE_MESSAGE_SEND;
+			pconv = PURPLE_CONVERSATION(purple_conversations_find_im_with_account(name, ta->account));
+			PurpleMessage *message = purple_message_new_outgoing(name, msg, msg_flags);
+			purple_message_set_time(message, timestamp);
+			purple_conversation_write_message(pconv, message);
+			purple_message_destroy(message);
+			
 		} else {
 			purple_debug_error("trillianweb", "Unknown message type %s\n", type);
+		}
+		
+		if (pconv && purple_conversation_has_focus(pconv)) {
+			trillianweb_mark_conversation_seen(pconv, PURPLE_CONVERSATION_UPDATE_UNSEEN);
 		}
 		
 	} else if (purple_strequal(e, "message_open")) {
@@ -463,6 +547,9 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		
 	} else if (purple_strequal(e, "session_ready")) {
 		purple_connection_set_state(ta->pc, PURPLE_CONNECTION_CONNECTED);
+		
+	} else if (purple_strequal(e, "session_error")) {
+		purple_connection_error(ta->pc, PURPLE_CONNECTION_ERROR_NAME_IN_USE, _("Logged in elsewhere"));
 		
 	} else {
 		purple_debug_error("trillianweb", "Unknown event type %s\n", e);
@@ -762,6 +849,8 @@ trillianweb_login(PurpleAccount *account)
 	trillian_fetch_url(ta, "https://octopus.trillian.im/trillian", data, trillianweb_process_poll_response, NULL);
 	
 	trillian_requestdata_free(data);
+	
+	purple_signal_connect(purple_conversations_get_handle(), "conversation-updated", account, PURPLE_CALLBACK(trillianweb_mark_conversation_seen), NULL);
 }
 
 
