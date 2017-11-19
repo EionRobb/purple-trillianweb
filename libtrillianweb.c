@@ -237,6 +237,32 @@ trillian_fetch_url(TrillianAccount *ta, const gchar *url, TrillianWebRequestData
 	ta->http_conns = g_slist_prepend(ta->http_conns, http_conn);
 }
 
+
+PurpleChat *
+trillianweb_find_chat(PurpleAccount *account, const char *name)
+{
+	PurpleBlistNode *node;
+	
+	for (node = purple_blist_get_root();
+		 node != NULL;
+		 node = purple_blist_node_next(node, TRUE)) {
+		if (PURPLE_IS_CHAT(node)) {
+			PurpleChat *chat = PURPLE_CHAT(node);
+
+			if (purple_chat_get_account(chat) != account) {
+				continue;
+			}
+			
+			if (purple_strequal(purple_chat_get_name(chat), name)) {
+				return chat;
+			}
+		}
+	}
+	
+	return NULL;
+}
+
+
 static void trillianweb_poll(TrillianAccount *ta);
 static void trillianweb_process_response(TrillianAccount *, TrillianWebRequestData *, gpointer);
 
@@ -266,11 +292,11 @@ trillianweb_mark_conversation_seen(PurpleConversation *conv, PurpleConversationU
 	
 	TrillianAccount *ta = purple_connection_get_protocol_data(pc);
 	gchar *window = NULL;
-	if (purple_conversation_get_type(conv) == PURPLE_CONV_TYPE_IM) {
+	if (PURPLE_IS_IM_CONVERSATION(conv)) {
 		const gchar *name = purple_conversation_get_name(conv);
 		window = g_hash_table_lookup(ta->im_window, name);
 		
-	} else if (purple_conversation_get_type(conv) == PURPLE_CONV_TYPE_CHAT) {
+	} else if (PURPLE_IS_CHAT_CONVERSATION(conv)) {
 		const gchar *name = purple_conversation_get_name(conv);
 		window = g_hash_table_lookup(ta->group_window, name);
 		
@@ -454,7 +480,7 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 				if (purple_strequal(medium, "ASTRA")) {
 					const gchar *name = purple_xmlnode_get_attrib(gc, "n");
 					gchar *displayname = purple_xmlnode_get_data(gc);
-					PurpleChat *chat = purple_blist_find_chat(ta->account, purple_url_decode(name));
+					PurpleChat *chat = trillianweb_find_chat(ta->account, purple_url_decode(name));
 					if (!chat) {
 						GHashTable *components = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 						g_hash_table_replace(components, g_strdup("name"), g_strdup(purple_url_decode(name)));
@@ -462,7 +488,7 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 						PurpleChat *chat = purple_chat_new(ta->account, purple_url_decode(displayname), components);
 						purple_blist_add_chat(chat, group, NULL);
 					} else {
-						purple_blist_alias_chat(chat, purple_url_decode(displayname));
+						purple_chat_set_alias(chat, purple_url_decode(displayname));
 					}
 					g_free(displayname);
 				}
@@ -496,7 +522,7 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		const gchar *medium = trillian_requestdata_get(chunk, "medium");
 		if (purple_strequal(medium, "ASTRA")) {
 			const gchar *name = trillian_requestdata_get(chunk, "name");
-			if (!purple_blist_find_chat(ta->account, name)) {
+			if (!trillianweb_find_chat(ta->account, name)) {
 				const gchar *displayname = trillian_requestdata_get(chunk, "displayname");
 				const gchar *group_name = trillian_requestdata_get(chunk, "group");
 				GHashTable *components = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
@@ -517,10 +543,10 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		if (purple_strequal(medium, "ASTRA")) {
 			const gchar *name = trillian_requestdata_get(chunk, "name");
 			const gchar *displayname = trillian_requestdata_get(chunk, "displayname");
-			PurpleChat *chat = purple_blist_find_chat(ta->account, name);
+			PurpleChat *chat = trillianweb_find_chat(ta->account, name);
 			
 			if (chat) {
-				purple_blist_alias_chat(chat, displayname);
+				purple_chat_set_alias(chat, displayname);
 			}
 		}
 		
@@ -1049,6 +1075,7 @@ plugin_init(PurplePlugin *plugin)
 	// prpl_info->chat_invite = trillianweb_chat_invite;
 	// prpl_info->chat_send = trillianweb_chat_send;
 	// prpl_info->set_chat_topic = trillianweb_chat_set_topic;
+	prpl_info->find_blist_chat  = trillianweb_find_chat;
 	// prpl_info->get_cb_real_name = trillianweb_get_real_name;
 	prpl_info->add_buddy = trillianweb_add_buddy;
 	prpl_info->alias_buddy = trillianweb_alias_buddy;
@@ -1123,7 +1150,7 @@ trillianweb_protocol_init(PurpleProtocol *prpl_info)
 	info->id = TRILLIANWEB_PLUGIN_ID;
 	info->name = "Discord";
 	info->options = OPT_PROTO_CHAT_TOPIC | OPT_PROTO_SLASH_COMMANDS_NATIVE | OPT_PROTO_UNIQUE_CHATNAME;
-	info->account_options = trillianweb_add_account_options(info->account_options);
+	//info->account_options = trillianweb_add_account_options(info->account_options);
 }
 
 static void
@@ -1145,50 +1172,52 @@ trillianweb_protocol_im_iface_init(PurpleProtocolIMIface *prpl_info)
 static void
 trillianweb_protocol_chat_iface_init(PurpleProtocolChatIface *prpl_info)
 {
-	prpl_info->send = trillianweb_chat_send;
+	//prpl_info->send = trillianweb_chat_send;
 	prpl_info->info = trillianweb_chat_info;
 	prpl_info->info_defaults = trillianweb_chat_info_defaults;
-	prpl_info->join = trillianweb_join_chat;
+	//prpl_info->join = trillianweb_join_chat;
 	prpl_info->get_name = trillianweb_get_chat_name;
-	prpl_info->invite = trillianweb_chat_invite;
-	prpl_info->set_topic = trillianweb_chat_set_topic;
-	prpl_info->get_user_real_name = trillianweb_get_real_name;
+	//prpl_info->invite = trillianweb_chat_invite;
+	//prpl_info->set_topic = trillianweb_chat_set_topic;
+	//prpl_info->get_user_real_name = trillianweb_get_real_name;
+	prpl_info->find_blist_chat  = trillianweb_find_chat;
 }
 
 static void
 trillianweb_protocol_server_iface_init(PurpleProtocolServerIface *prpl_info)
 {
 	prpl_info->add_buddy = trillianweb_add_buddy;
-	prpl_info->remove_buddy = trillianweb_buddy_remove;
+	prpl_info->alias_buddy = trillianweb_alias_buddy;
+	//prpl_info->remove_buddy = trillianweb_buddy_remove;
 	prpl_info->set_status = trillianweb_set_status;
-	prpl_info->set_idle = trillianweb_set_idle;
-	prpl_info->group_buddy = trillianweb_fake_group_buddy;
-	prpl_info->rename_group = trillianweb_fake_group_rename;
-	prpl_info->get_info = trillianweb_get_info;
+	//prpl_info->set_idle = trillianweb_set_idle;
+	//prpl_info->group_buddy = trillianweb_fake_group_buddy;
+	//prpl_info->rename_group = trillianweb_fake_group_rename;
+	//prpl_info->get_info = trillianweb_get_info;
 }
 
 static void
 trillianweb_protocol_client_iface_init(PurpleProtocolClientIface *prpl_info)
 {
-	prpl_info->get_account_text_table = trillianweb_get_account_text_table;
-	prpl_info->status_text = trillianweb_status_text;
-	prpl_info->get_actions = trillianweb_actions;
-	prpl_info->list_emblem = trillianweb_list_emblem;
-	prpl_info->tooltip_text = trillianweb_tooltip_text;
+	//prpl_info->get_account_text_table = trillianweb_get_account_text_table;
+	//prpl_info->status_text = trillianweb_status_text;
+	//prpl_info->get_actions = trillianweb_actions;
+	//prpl_info->list_emblem = trillianweb_list_emblem;
+	//prpl_info->tooltip_text = trillianweb_tooltip_text;
 }
 
 static void
 trillianweb_protocol_privacy_iface_init(PurpleProtocolPrivacyIface *prpl_info)
 {
-	prpl_info->add_deny = trillianweb_block_user;
-	prpl_info->rem_deny = trillianweb_unblock_user;
+	//prpl_info->add_deny = trillianweb_block_user;
+	//prpl_info->rem_deny = trillianweb_unblock_user;
 }
 
 static void
 trillianweb_protocol_roomlist_iface_init(PurpleProtocolRoomlistIface *prpl_info)
 {
-	prpl_info->get_list = trillianweb_roomlist_get_list;
-	prpl_info->room_serialize = trillianweb_roomlist_serialize;
+	//prpl_info->get_list = trillianweb_roomlist_get_list;
+	//prpl_info->room_serialize = trillianweb_roomlist_serialize;
 }
 
 static PurpleProtocol *trillianweb_protocol;
@@ -1246,10 +1275,10 @@ libpurple3_plugin_unload(PurplePlugin *plugin, GError **error)
 static PurplePluginInfo *
 plugin_query(GError **error)
 {
-#ifdef ENABLE_NLS
-	bindtextdomain(GETTEXT_PACKAGE, LOCALEDIR);
-	bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
-#endif
+// #ifdef ENABLE_NLS
+	// bindtextdomain(GETTEXT_PACKAGE, LOCALEDIR);
+	// bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
+// #endif
 	
 	return purple_plugin_info_new(
 	  "id", TRILLIANWEB_PLUGIN_ID,
