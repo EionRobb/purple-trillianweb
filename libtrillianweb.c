@@ -253,7 +253,10 @@ trillianweb_find_chat(PurpleAccount *account, const char *name)
 				continue;
 			}
 			
-			if (purple_strequal(purple_chat_get_name(chat), name)) {
+			GHashTable *components = purple_chat_get_components(chat);
+			const gchar *chat_name = g_hash_table_lookup(components, "name");
+			
+			if (purple_strequal(chat_name, name)) {
 				return chat;
 			}
 		}
@@ -450,6 +453,8 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 		PurpleXmlNode *cl = purple_xmlnode_from_str(contactlist_xml, xml_len);
 		PurpleXmlNode *s = purple_xmlnode_get_child(cl, "s");
 		PurpleXmlNode *g = purple_xmlnode_get_child(s, "g");
+		
+		purple_debug_info("trillianweb", "Got contactlist: %s\n", contactlist_xml);
 		
 		do {
 			PurpleXmlNode *t = purple_xmlnode_get_child(g, "t");
