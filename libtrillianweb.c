@@ -465,7 +465,7 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 				group_name = purple_xmlnode_get_data(t);
 			}
 			if (!group_name || !*group_name) {
-				group_name = "Trillian";
+				group_name = g_strdup("Trillian");
 			}
 			PurpleGroup *group = purple_blist_find_group(purple_url_decode(group_name));
 			if (!group) {
