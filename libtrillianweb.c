@@ -450,23 +450,31 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 	} else if (purple_strequal(e, "contactlist_initialize")) {
 		gsize xml_len;
 		gchar *contactlist_xml = (gchar *)g_base64_decode(trillian_requestdata_get(chunk, "contactlist"), &xml_len);
+		
 		PurpleXmlNode *cl = purple_xmlnode_from_str(contactlist_xml, xml_len);
 		PurpleXmlNode *s = purple_xmlnode_get_child(cl, "s");
-		PurpleXmlNode *g = purple_xmlnode_get_child(s, "g");
+		PurpleXmlNode *g;
 		
 		purple_debug_info("trillianweb", "Got contactlist: %s\n", contactlist_xml);
 		
-		do {
+		// First loop through buddies not in a group, then buddies in each group
+		for (g = s; g; g = (g == s ? purple_xmlnode_get_child(s, "g") : purple_xmlnode_get_next_twin(g))) {
+			gchar *group_name = NULL;
 			PurpleXmlNode *t = purple_xmlnode_get_child(g, "t");
-			gchar *group_name = purple_xmlnode_get_data(t);
+			if (t) {
+				group_name = purple_xmlnode_get_data(t);
+			}
+			if (!group_name || !*group_name) {
+				group_name = "Trillian";
+			}
 			PurpleGroup *group = purple_blist_find_group(purple_url_decode(group_name));
 			if (!group) {
 				group = purple_group_new(purple_url_decode(group_name));
 			}
 			g_free(group_name);
 			
-			PurpleXmlNode *c = purple_xmlnode_get_child(g, "c");
-			do {
+			PurpleXmlNode *c;
+			for (c = purple_xmlnode_get_child(g, "c"); c; c = purple_xmlnode_get_next_twin(c)) {
 				const gchar *medium = purple_xmlnode_get_attrib(c, "m");
 				if (purple_strequal(medium, "ASTRA")) {
 					const gchar *username = purple_xmlnode_get_attrib(c, "r");
@@ -477,10 +485,10 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 						g_free(alias);
 					}
 				}
-			} while ((c = purple_xmlnode_get_next_twin(c)));
+			}
 			
-			PurpleXmlNode *gc = purple_xmlnode_get_child(g, "gc");
-			do {
+			PurpleXmlNode *gc;
+			for (gc = purple_xmlnode_get_child(g, "gc"); gc; gc = purple_xmlnode_get_next_twin(gc)) {
 				const gchar *medium = purple_xmlnode_get_attrib(gc, "m");
 				if (purple_strequal(medium, "ASTRA")) {
 					const gchar *name = purple_xmlnode_get_attrib(gc, "n");
@@ -497,8 +505,8 @@ trillianweb_process_chunk(TrillianAccount *ta, TrillianWebRequestData *chunk, gp
 					}
 					g_free(displayname);
 				}
-			} while ((gc = purple_xmlnode_get_next_twin(gc)));
-		} while ((g = purple_xmlnode_get_next_twin(g)));
+			}
+		}
 		
 		purple_xmlnode_free(cl);
 		g_free(contactlist_xml);
@@ -716,12 +724,13 @@ static void
 trillianweb_created_window(TrillianAccount *ta, TrillianWebRequestData *response, gpointer user_data)
 {
 	PurpleMessage *msg = user_data;
-	const gchar *who = purple_message_get_recipient(msg);
+	//const gchar *who = purple_message_get_recipient(msg);
 	const gchar *message = purple_message_get_contents(msg);
 	
 	trillianweb_process_response(ta, response, user_data);
 
-	const gchar *window = g_hash_table_lookup(ta->im_window, who);
+	// const gchar *window = g_hash_table_lookup(ta->im_window, who);
+	const gchar *window = trillian_requestdata_get(response, "window0");
 	trillianweb_conversation_send_message(ta, window, message);
 	
 	//purple_message_destroy(msg);
@@ -762,6 +771,20 @@ trillianweb_send_im(PurpleConnection *pc,
 	}
 
 	return trillianweb_conversation_send_message(ta, window, message);
+}
+
+static gint
+trillianweb_chat_send(PurpleConnection *pc, gint id,
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+				  PurpleMessage *msg)
+{
+	const gchar *message = purple_message_get_contents(msg);
+#else
+				  const gchar *message, PurpleMessageFlags flags)
+{
+#endif
+	
+	return -1;
 }
 
 static guint
@@ -1078,7 +1101,7 @@ plugin_init(PurplePlugin *plugin)
 	// prpl_info->join_chat = trillianweb_join_chat;
 	prpl_info->get_chat_name = trillianweb_get_chat_name;
 	// prpl_info->chat_invite = trillianweb_chat_invite;
-	// prpl_info->chat_send = trillianweb_chat_send;
+	prpl_info->chat_send = trillianweb_chat_send;
 	// prpl_info->set_chat_topic = trillianweb_chat_set_topic;
 	prpl_info->find_blist_chat  = trillianweb_find_chat;
 	// prpl_info->get_cb_real_name = trillianweb_get_real_name;
