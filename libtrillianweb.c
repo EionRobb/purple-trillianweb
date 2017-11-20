@@ -890,13 +890,25 @@ trillianweb_login(PurpleAccount *account)
 	ta->group_window = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ta->window_group = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	
+	const gchar *appname = g_get_application_name();
+	if (!appname) { appname = "libpurple"; }
+	gchar *version = g_strdup_printf("%s%s", purple_core_get_version(), ".0"); // Needs to be in a.b.c.d format
+	
 	TrillianWebRequestData *data = trillian_requestdata_new();
 	trillian_requestdata_add(data, "c", "sessionLogin");
 	trillian_requestdata_add(data, "protocol", "2");
 	trillian_requestdata_add(data, "lang", "en");
-	trillian_requestdata_add(data, "client", "Trillian");
-	trillian_requestdata_add(data, "version", "4.2.0.10");
-	trillian_requestdata_add(data, "platform", "Web");
+	trillian_requestdata_add(data, "client", appname);
+	trillian_requestdata_add(data, "version", version);
+	trillian_requestdata_add(data, "platform", 
+#if defined(_WIN32)
+									  "Windows"
+#elif defined(__APPLE__)
+									  "OSX"
+#else
+									  "Linux"
+#endif
+	);
 	trillian_requestdata_add(data, "device", "WEB");
 	trillian_requestdata_add(data, "expire", "5");
 	
@@ -905,6 +917,8 @@ trillianweb_login(PurpleAccount *account)
 	trillian_requestdata_free(data);
 	
 	purple_signal_connect(purple_conversations_get_handle(), "conversation-updated", account, PURPLE_CALLBACK(trillianweb_mark_conversation_seen), NULL);
+	
+	g_free(version);
 }
 
 
