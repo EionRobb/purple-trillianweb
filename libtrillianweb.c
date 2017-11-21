@@ -183,6 +183,7 @@ trillianweb_prepare_fetch_url(TrillianAccount *ta, const gchar *url, const gchar
 	}
 	
 	purple_http_request_set_keepalive_pool(request, ta->keepalive_pool);
+	purple_http_request_set_timeout(request, -1);
 
 	return request;
 }
@@ -209,10 +210,15 @@ trillian_fetch_url(TrillianAccount *ta, const gchar *url, TrillianWebRequestData
 		trillian_requestdata_add(data, "xsession", ta->session);
 	}
 	if (ta->sequence) {
-		gchar *sequence_str = g_strdup_printf("%" G_GUINT64_FORMAT, ++ta->sequence);
+		ta->sequence = ta->sequence + 1;
+		gchar *sequence_str = g_strdup_printf("%" G_GUINT64_FORMAT, ta->sequence);
 		trillian_requestdata_add(data, "xsequence", sequence_str);
 		g_free(sequence_str);
 	}
+	
+	postdata = trillian_requestdata_get_string(data);
+	purple_debug_misc("trillianweb", "POSTing %s \n", postdata);
+	g_free(postdata);
 	
 	trillian_requestdata_add(data, "xusername", purple_account_get_username(ta->account));
 	trillian_requestdata_add(data, "xpassword", purple_connection_get_password(ta->pc));
@@ -313,7 +319,7 @@ trillianweb_mark_conversation_seen(PurpleConversation *conv, PurpleConversationU
 	trillian_requestdata_add(data, "c", "messageAck");
 	trillian_requestdata_add(data, "window", window);
 	
-	trillian_fetch_url(ta, NULL, data, NULL, NULL);
+	//trillian_fetch_url(ta, NULL, data, NULL, NULL);
 	
 	trillian_requestdata_free(data);
 }
@@ -884,6 +890,7 @@ trillianweb_login(PurpleAccount *account)
 	ta->account = account;
 	ta->pc = pc;
 	ta->keepalive_pool = purple_http_keepalive_pool_new();
+	purple_http_keepalive_pool_set_limit_per_host(ta->keepalive_pool, 4);
 	
 	ta->im_window = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ta->window_im = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
